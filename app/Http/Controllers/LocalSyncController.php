@@ -15,11 +15,7 @@ class LocalSyncController extends Controller
 {
     /**
      * Dump les factures depuis la base comptable vers la table tampon
-     * CORRIGÉ pour dates en string
-     */
-    /**
-     * Dump les factures depuis la base comptable vers la table tampon
-     * CORRIGÉ pour dates en string
+     * SIMPLIFIÉ : VTEM uniquement + Test d'existence RANO
      */
     public function dumpInvoices(Request $request)
     {
@@ -29,7 +25,7 @@ class LocalSyncController extends Controller
             $forceRefresh = $request->boolean('force_refresh', false);
             $batchId = 'batch_' . now()->format('Y_m_d_H_i_s') . '_' . Str::random(8);
 
-            // Requête SQL identique
+            // REQUÊTE SIMPLIFIÉE : VTEM UNIQUEMENT NON LETTRÉES
             $sql = "
                 SELECT 
                     -- === INFORMATIONS CLIENT ===
@@ -97,29 +93,30 @@ class LocalSyncController extends Controller
 
                 WHERE 
                     e.CT_Num LIKE '411%'
-                    AND e.JO_Num IN ('VTEM', 'RANO')
-                    AND e.EC_Sens = 0
-                    
-                    -- === LOGIQUE DE LETTRAGE DIFFÉRENCIÉE ===
-                    AND (
-                        -- VTEM: Non lettrées seulement
-                        (e.JO_Num = 'VTEM' AND (e.EC_Lettrage = '' OR e.EC_Lettrage IS NULL))
-                        OR
-                        -- RANO: Lettrées ET non lettrées (tous les reports à nouveau)
-                        (e.JO_Num = 'RANO')
-                    )
-                    
+                    AND e.JO_Num = 'VTEM'                           -- SEULEMENT VTEM
+                    AND e.EC_Sens = 0                               -- Débit (factures)
+                    AND (e.EC_Lettrage = '' OR e.EC_Lettrage IS NULL)  -- Non lettrées
                     AND e.EC_RefPiece IS NOT NULL
+                    AND e.EC_RefPiece != ''                         -- Pas de RefPiece vide
                     AND e.EC_Montant > 0
-                    AND e.EC_Echeance >= ?";
+                    AND e.EC_Echeance >= ?                          -- Date limite
+                    
+                    -- === TEST D'EXISTENCE RANO : Ignorer si RANO existe avec même RefPiece ===
+                    AND NOT EXISTS (
+                        SELECT 1 FROM F_ECRITUREC rano
+                        WHERE rano.CT_Num = e.CT_Num
+                        AND rano.EC_RefPiece = e.EC_RefPiece
+                        AND rano.JO_Num = 'RANO'
+                        AND rano.EC_Sens = 0
+                    )";
 
+            // CONDITION POUR ÉVITER LES DOUBLONS (sauf si force refresh)
             if (!$forceRefresh) {
                 $sql .= "
                     AND NOT EXISTS (
                         SELECT 1 FROM invoice_sync_buffer isb 
                         WHERE isb.invoice_number = e.EC_RefPiece
                         AND isb.client_code = e.CT_Num
-                        AND isb.deleted_at IS NULL
                     )";
             }
 
@@ -141,12 +138,32 @@ class LocalSyncController extends Controller
 
             $addedCount = 0;
             $updatedCount = 0;
-            $errors = [];
             $skippedCount = 0;
+            $errors = [];
+            $ignoredForRano = 0;
 
             foreach ($invoices as $invoice) {
                 try {
-                    // CORRECTION : Conversion des dates en string AVANT insertion
+                    // DOUBLE VÉRIFICATION : Test RANO en PHP aussi pour sécurité
+                    $hasRano = DB::select("
+                        SELECT COUNT(*) as count 
+                        FROM F_ECRITUREC 
+                        WHERE CT_Num = ? 
+                        AND EC_RefPiece = ? 
+                        AND JO_Num = 'RANO' 
+                        AND EC_Sens = 0
+                    ", [$invoice->client_code, $invoice->invoice_number]);
+
+                    if ($hasRano[0]->count > 0) {
+                        $ignoredForRano++;
+                        Log::info("Facture ignorée car RANO existe", [
+                            'invoice_number' => $invoice->invoice_number,
+                            'client_code' => $invoice->client_code
+                        ]);
+                        continue; // Ignorer cette facture
+                    }
+
+                    // Préparation des données (identique à avant)
                     $data = [
                         'invoice_number' => $invoice->invoice_number,
                         'invoice_reference' => $invoice->invoice_reference,
@@ -157,7 +174,7 @@ class LocalSyncController extends Controller
                         'amount_paid' => (float) $invoice->amount_paid,
                         'balance_due' => (float) $invoice->balance_due,
 
-                        // DATES CONVERTIES EN STRING
+                        // Dates converties en string
                         'invoice_date' => $invoice->invoice_date ? date('Y-m-d', strtotime($invoice->invoice_date)) : null,
                         'due_date' => $invoice->due_date ? date('Y-m-d', strtotime($invoice->due_date)) : null,
 
@@ -189,7 +206,7 @@ class LocalSyncController extends Controller
                         'document_guid' => $invoice->document_guid,
                         'description' => $invoice->description,
 
-                        // DATES MÉTADONNÉES CONVERTIES EN STRING
+                        // Dates métadonnées converties en string
                         'source_created_at' => $invoice->source_created_at ? date('Y-m-d H:i:s', strtotime($invoice->source_created_at)) : null,
                         'source_updated_at' => $invoice->source_updated_at ? date('Y-m-d H:i:s', strtotime($invoice->source_updated_at)) : null,
                         'last_sage_sync' => date('Y-m-d H:i:s', strtotime($invoice->last_sage_sync)),
@@ -211,7 +228,7 @@ class LocalSyncController extends Controller
                             $existing->update($data);
                             $updatedCount++;
                         } else {
-                            // Juste mettre à jour les champs critiques si pas de force refresh
+                            // Juste mettre à jour les champs critiques
                             $existing->update([
                                 'balance_due' => $data['balance_due'],
                                 'amount_paid' => $data['amount_paid'],
@@ -231,12 +248,9 @@ class LocalSyncController extends Controller
                 } catch (Exception $e) {
                     $errors[] = "Erreur facture {$invoice->invoice_number}: " . $e->getMessage();
                     Log::error("Erreur dump facture {$invoice->invoice_number}", [
+                        'invoice_number' => $invoice->invoice_number ?? 'N/A',
+                        'client_code' => $invoice->client_code ?? 'N/A',
                         'error' => $e->getMessage(),
-                        'invoice_data' => [
-                            'invoice_number' => $invoice->invoice_number ?? 'N/A',
-                            'client_code' => $invoice->client_code ?? 'N/A',
-                            'amount' => $invoice->amount ?? 'N/A'
-                        ],
                         'trace' => $e->getTraceAsString()
                     ]);
                 }
@@ -244,13 +258,20 @@ class LocalSyncController extends Controller
 
             return response()->json([
                 'success' => true,
-                'message' => "Dump terminé avec succès",
+                'message' => "Dump terminé avec succès (VTEM uniquement)",
                 'results' => [
+                    'found_count' => count($invoices),
                     'added_count' => $addedCount,
                     'updated_count' => $updatedCount,
                     'skipped_count' => $skippedCount,
-                    'total_found' => count($invoices),
+                    'ignored_for_rano' => $ignoredForRano,
                     'errors_count' => count($errors),
+                ],
+                'filters_applied' => [
+                    'journal_type' => 'VTEM_ONLY',
+                    'lettrage' => 'NON_LETTRE_ONLY',
+                    'rano_check' => 'IGNORED_IF_RANO_EXISTS',
+                    'empty_refpiece' => 'EXCLUDED'
                 ],
                 'batch_id' => $batchId,
                 'from_date' => $fromDate,
