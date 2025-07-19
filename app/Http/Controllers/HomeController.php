@@ -105,7 +105,7 @@ class HomeController extends Controller
     {
         try {
             $stats = DB::select("
-                SELECT
+                SELECT 
                     COUNT(*) as total_invoices,
                     SUM(e.EC_Montant) as total_amount,
                     COUNT(DISTINCT e.CT_Num) as unique_clients,
@@ -114,7 +114,7 @@ class HomeController extends Controller
 
                 FROM F_ECRITUREC e
 
-                WHERE
+                WHERE 
                     e.CT_Num LIKE '411%'
                     AND e.JO_Num IN ('VTEM', 'RANO')
                     AND e.EC_Sens = 0
@@ -153,7 +153,7 @@ class HomeController extends Controller
         return InvoiceSyncBuffer::where('sync_status', 'pending')
             ->whereIn('priority', ['TRES_URGENT', 'URGENT'])
             ->orderByRaw("
-                CASE
+                CASE 
                     WHEN priority = 'TRES_URGENT' THEN 1
                     WHEN priority = 'URGENT' THEN 2
                     ELSE 3
@@ -250,7 +250,7 @@ class HomeController extends Controller
             }
 
             $invoices = $query->orderByRaw("
-                    CASE
+                    CASE 
                         WHEN priority = 'TRES_URGENT' THEN 1
                         WHEN priority = 'URGENT' THEN 2
                         WHEN priority = 'NORMAL' THEN 3
@@ -321,16 +321,17 @@ class HomeController extends Controller
                 $responseData = $response->json();
                 $batchId = 'batch_' . now()->format('YmdHis');
 
-                // Marquer les factures comme synchronisées
+                // Marquer les factures comme synchronisées (CORRIGÉ)
+                $now = now();
                 $invoiceIds = $invoices->pluck('id')->toArray();
                 $updatedCount = InvoiceSyncBuffer::whereIn('id', $invoiceIds)
                     ->update([
                         'sync_status' => 'synced',
-                        'synced_at' => now(),
+                        'synced_at' => $now,
                         'sync_notes' => 'Envoyé vers application principale: ' . ($responseData['message'] ?? 'OK'),
                         'sync_batch_id' => $batchId,
                         'sync_attempts' => DB::raw('ISNULL(sync_attempts, 0) + 1'),
-                        'last_sync_attempt' => now(),
+                        'last_sync_attempt' => $now,
                     ]);
 
                 return response()->json([
@@ -341,13 +342,14 @@ class HomeController extends Controller
                     'main_app_response' => $responseData
                 ]);
             } else {
-                // Marquer les factures comme échouées
+                // Marquer les factures comme échouées (CORRIGÉ)
+                $now = now();
                 $invoiceIds = $invoices->pluck('id')->toArray();
                 InvoiceSyncBuffer::whereIn('id', $invoiceIds)
                     ->update([
                         'sync_status' => 'failed',
                         'sync_attempts' => DB::raw('ISNULL(sync_attempts, 0) + 1'),
-                        'last_sync_attempt' => now(),
+                        'last_sync_attempt' => $now,
                         'last_error_message' => 'HTTP ' . $response->status() . ': ' . $response->body()
                     ]);
 

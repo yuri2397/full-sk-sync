@@ -99,13 +99,15 @@ class LocalSyncController extends Controller
                     AND e.EC_Echeance >= ?";
 
             // CONDITION IMPORTANTE : Ignorer les factures déjà dumpées (sauf si force_refresh)
-            $sql .= "
+            if (!$forceRefresh) {
+                $sql .= "
                     AND NOT EXISTS (
                         SELECT 1 FROM invoice_sync_buffer isb 
                         WHERE isb.invoice_number = e.EC_RefPiece
                         AND isb.client_code = e.CT_Num
                         AND isb.deleted_at IS NULL
                     )";
+            }
 
             $sql .= "
                 ORDER BY 
@@ -382,7 +384,7 @@ class LocalSyncController extends Controller
     }
 
     /**
-     * Marquer des factures comme synchronisées avec tracking amélioré
+     * Marquer des factures comme synchronisées avec tracking amélioré (CORRIGÉ)
      */
     public function markAsSynced(Request $request)
     {
@@ -398,12 +400,15 @@ class LocalSyncController extends Controller
                 ], 400);
             }
 
+            // CORRECTION : Utiliser Carbon/now() pour les dates
+            $now = now();
+
             $updateData = [
                 'sync_status' => 'synced',
-                'synced_at' => now(),
+                'synced_at' => $now,
                 'sync_notes' => $notes,
-                'sync_attempts' => DB::raw('sync_attempts + 1'),
-                'last_sync_attempt' => now(),
+                'sync_attempts' => DB::raw('ISNULL(sync_attempts, 0) + 1'),
+                'last_sync_attempt' => $now,
             ];
 
             if ($syncBatchId) {
@@ -432,7 +437,7 @@ class LocalSyncController extends Controller
     }
 
     /**
-     * Marquer des tentatives de synchronisation échouées
+     * Marquer des tentatives de synchronisation échouées (CORRIGÉ)
      */
     public function markAsFailed(Request $request)
     {
@@ -440,11 +445,14 @@ class LocalSyncController extends Controller
             $invoiceIds = $request->input('invoice_ids', []);
             $errorMessage = $request->input('error_message', 'Erreur de synchronisation');
 
+            // CORRECTION : Utiliser Carbon/now() pour les dates
+            $now = now();
+
             $updatedCount = InvoiceSyncBuffer::whereIn('id', $invoiceIds)
                 ->update([
                     'sync_status' => 'failed',
-                    'sync_attempts' => DB::raw('sync_attempts + 1'),
-                    'last_sync_attempt' => now(),
+                    'sync_attempts' => DB::raw('ISNULL(sync_attempts, 0) + 1'),
+                    'last_sync_attempt' => $now,
                     'last_error_message' => $errorMessage,
                 ]);
 
