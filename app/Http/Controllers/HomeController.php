@@ -233,71 +233,206 @@ class HomeController extends Controller
         ];
     }
 
+/**
+     * Envoyer les factures non synchronisées vers l'application principale
+     * AVEC FILTRES : pas de invoice_number vide + pas de RANO lettrés
+     */
     public function pushUnsyncedInvoices(Request $request)
-{
-    try {
-        $limit = min((int)$request->input('limit', 1000), 2000);
-        $priority = $request->input('priority');
+    {
+        try {
+            $limit = min((int)$request->input('limit', 1000), 2000);
+            $priority = $request->input('priority');
 
-        // ... récupération des factures (identique) ...
+            // Récupérer les factures non synchronisées AVEC FILTRES AJOUTÉS
+            $query = InvoiceSyncBuffer::where('sync_status', 'pending')
+                // === NOUVEAU FILTRE 1: Pas d'invoice_number vide ===
+                ->whereNotNull('invoice_number')
+                ->where('invoice_number', '!=', '')
+                ->where('invoice_number', '!=', ' ')
+                
+                // === NOUVEAU FILTRE 2: Logique RANO lettrés ===
+                ->where(function ($subQuery) {
+                    $subQuery
+                        // VTEM: Toujours OK (déjà filtré au dump)
+                        ->where('journal_type', 'VTEM')
+                        // OU RANO non lettré
+                        ->orWhere(function ($ranoQuery) {
+                            $ranoQuery->where('journal_type', 'RANO')
+                                     ->where('is_lettred', false);
+                        })
+                        // OU autres journaux
+                        ->orWhereNotIn('journal_type', ['VTEM', 'RANO']);
+                });
 
-        if ($response->successful()) {
-            $responseData = $response->json();
-            $batchId = 'batch_' . now()->format('YmdHis');
+            if ($priority) {
+                // Si priority contient plusieurs valeurs séparées par virgule
+                if (str_contains($priority, ',')) {
+                    $priorities = explode(',', $priority);
+                    $query->whereIn('priority', $priorities);
+                } else {
+                    $query->where('priority', $priority);
+                }
+            }
 
-            $now = now()->format('Y-m-d H:i:s');
-            $invoiceIds = $invoices->pluck('id')->toArray();
+            $invoices = $query->orderByRaw("
+                    CASE 
+                        WHEN priority = 'TRES_URGENT' THEN 1
+                        WHEN priority = 'URGENT' THEN 2
+                        WHEN priority = 'NORMAL' THEN 3
+                        ELSE 4
+                    END
+                ")
+                ->orderBy('due_date', 'asc')
+                ->orderBy(DB::raw('ISNULL(balance_due, amount)'), 'desc')
+                ->limit($limit)
+                ->get();
 
-            $updatedCount = InvoiceSyncBuffer::whereIn('id', $invoiceIds)
-                ->update([
-                    'sync_status' => 'synced',
-                    'synced_at' => $now,
-                    'sync_notes' => 'Envoyé vers application principale: ' . ($responseData['message'] ?? 'OK'),
-                    'sync_batch_id' => $batchId,
-                    'sync_attempts' => DB::raw('ISNULL(sync_attempts, 0) + 1'),
-                    'last_sync_attempt' => $now,
-                    // === PLUS DE updated_at ===
+            if ($invoices->isEmpty()) {
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Aucune facture à synchroniser (après filtrage)',
+                    'pushed_count' => 0,
+                    'filters_applied' => [
+                        'no_empty_invoice_number' => true,
+                        'no_rano_lettred' => true,
+                        'priority' => $priority
+                    ]
+                ]);
+            }
+
+            // Préparer les données pour l'envoi
+            $payload = [
+                'invoices' => $invoices->map(function ($invoice) {
+                    return [
+                        'local_id' => $invoice->id,
+                        'invoice_number' => $invoice->invoice_number,
+                        'invoice_reference' => $invoice->invoice_reference,
+                        'invoice_date' => $invoice->invoice_date,
+                        'due_date' => $invoice->due_date,
+                        'amount' => $invoice->amount,
+                        'invoice_total' => $invoice->invoice_total,
+                        'balance_due' => $invoice->balance_due ?? $invoice->amount,
+                        'currency' => 'XOF',
+                        'overdue_category' => $invoice->overdue_category,
+                        'days_overdue' => $invoice->days_overdue,
+                        'priority' => $invoice->priority,
+                        
+                        // === INFORMATIONS ENRICHIES SAGE ===
+                        'journal_type' => $invoice->journal_type,
+                        'sage_lettrage_code' => $invoice->sage_lettrage_code,
+                        'is_lettred' => $invoice->is_lettred,
+                        
+                        'client' => [
+                            'code' => $invoice->client_code,
+                            'name' => $invoice->client_name,
+                            'phone' => $invoice->client_phone,
+                            'email' => $invoice->client_email,
+                            'address' => $invoice->client_address,
+                            'commercial_contact' => $invoice->commercial_contact
+                        ],
+                        'description' => $invoice->description,
+                        'source_entry_id' => $invoice->source_entry_id,
+                        'created_at' => $invoice->created_at ?? null,
+                        'updated_at' => $invoice->updated_at ?? null
+                    ];
+                }),
+                'metadata' => [
+                    'total_count' => $invoices->count(),
+                    'timestamp' => now()->toIso8601String(),
+                    'source' => 'laravel-sync-buffer-v2',
+                    'version' => '2.1',
+                    'filters_applied' => [
+                        'no_empty_invoice_number' => true,
+                        'no_rano_lettred' => true,
+                        'priority_filter' => $priority
+                    ]
+                ]
+            ];
+
+            // Envoyer vers l'application principale
+            $response = Http::timeout(120)
+                ->retry(3, 2000)
+                ->withHeaders([
+                    'X-API-Key' => 'sk-digitanalh2HRpxrDVJ6bkk5Gy0iHehnf6i9Czhtiv7rG82REOENWLzK42Sv6qGW04cLz4j3hhyf44yJ3d8jShdudGl9NzvuGUfQHPkiHg1YtUL9dEWsbZ55yrJYY',
+                    'X-Source' => 'sage-sync-buffer',
+                ])
+                ->post($this->mainAppUrl . '/api/sage-sync/receive-invoices', $payload);
+
+            if ($response->successful()) {
+                $responseData = $response->json();
+                $batchId = 'batch_' . now()->format('YmdHis');
+
+                $now = now()->format('Y-m-d H:i:s');
+                $invoiceIds = $invoices->pluck('id')->toArray();
+
+                // Traitement par lots pour éviter les timeouts
+                $chunks = array_chunk($invoiceIds, 100);
+                $totalUpdated = 0;
+
+                foreach ($chunks as $chunk) {
+                    $count = InvoiceSyncBuffer::whereIn('id', $chunk)
+                        ->update([
+                            'sync_status' => 'synced',
+                            'synced_at' => $now,
+                            'sync_notes' => 'Envoyé vers application principale: ' . ($responseData['message'] ?? 'OK'),
+                            'sync_batch_id' => $batchId,
+                            'sync_attempts' => DB::raw('ISNULL(sync_attempts, 0) + 1'),
+                            'last_sync_attempt' => $now,
+                        ]);
+                    $totalUpdated += $count;
+                }
+
+                return response()->json([
+                    'success' => true,
+                    'message' => "Synchronisation réussie: {$totalUpdated} factures envoyées",
+                    'pushed_count' => $totalUpdated,
+                    'batch_id' => $batchId,
+                    'processed_chunks' => count($chunks),
+                    'filters_applied' => [
+                        'no_empty_invoice_number' => true,
+                        'no_rano_lettred' => true,
+                        'priority_filter' => $priority
+                    ],
+                    'main_app_response' => $responseData
                 ]);
 
-            return response()->json([
-                'success' => true,
-                'message' => "Synchronisation réussie: {$updatedCount} factures envoyées",
-                'pushed_count' => $updatedCount,
-                'batch_id' => $batchId,
-                'main_app_response' => $responseData
+            } else {
+                // Marquer comme échoué
+                $now = now()->format('Y-m-d H:i:s');
+                $invoiceIds = $invoices->pluck('id')->toArray();
+
+                $chunks = array_chunk($invoiceIds, 100);
+                foreach ($chunks as $chunk) {
+                    InvoiceSyncBuffer::whereIn('id', $chunk)
+                        ->update([
+                            'sync_status' => 'failed',
+                            'sync_attempts' => DB::raw('ISNULL(sync_attempts, 0) + 1'),
+                            'last_sync_attempt' => $now,
+                            'last_error_message' => 'HTTP ' . $response->status() . ': ' . $response->body()
+                        ]);
+                }
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Erreur lors de l\'envoi vers l\'application principale',
+                    'error' => 'HTTP ' . $response->status(),
+                    'details' => $response->body()
+                ], 500);
+            }
+
+        } catch (Exception $e) {
+            Log::error('Erreur push factures: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString()
             ]);
-
-        } else {
-            $now = now()->format('Y-m-d H:i:s');
-            $invoiceIds = $invoices->pluck('id')->toArray();
-
-            InvoiceSyncBuffer::whereIn('id', $invoiceIds)
-                ->update([
-                    'sync_status' => 'failed',
-                    'sync_attempts' => DB::raw('ISNULL(sync_attempts, 0) + 1'),
-                    'last_sync_attempt' => $now,
-                    'last_error_message' => 'HTTP ' . $response->status() . ': ' . $response->body()
-                    // === PLUS DE updated_at ===
-                ]);
 
             return response()->json([
                 'success' => false,
-                'message' => 'Erreur lors de l\'envoi vers l\'application principale',
-                'error' => 'HTTP ' . $response->status(),
-                'details' => $response->body()
+                'message' => 'Erreur lors de l\'envoi des factures',
+                'error' => $e->getMessage()
             ], 500);
         }
-
-    } catch (Exception $e) {
-        Log::error('Erreur push factures: ' . $e->getMessage());
-        return response()->json([
-            'success' => false,
-            'message' => 'Erreur lors de l\'envoi des factures',
-            'error' => $e->getMessage()
-        ], 500);
     }
-}
-
+    
     /**
      * Obtenir les statistiques en temps réel (API endpoint)
      */

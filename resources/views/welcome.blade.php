@@ -449,16 +449,6 @@
             </div>
         </div>
 
-        <!-- Factures Urgentes -->
-        <div class="urgent-invoices">
-            <h3>🚨 Factures Urgentes (Top 10)</h3>
-            <div id="urgent-invoices-list">
-                <div style="text-align: center; color: #6b7280; padding: 20px;">
-                    Chargement des factures urgentes...
-                </div>
-            </div>
-        </div>
-
         <!-- Actions -->
         <div class="actions-section">
             <h3>🚀 Actions de Synchronisation</h3>
@@ -503,7 +493,7 @@
         // Configuration
         const API_BASE = 'http://localhost:8080/sk/public/api/sync';
         // const EXTERNAL_SYNC_URL = 'https://app-skd-cloud-api-prod.digita.sn/api/sage-sync/receive-invoices'; // prod
-        const EXTERNAL_SYNC_URL = 'https://sk-cloud-api-app.digita.sn/api/sage-sync/receive-invoices'; // test
+        const EXTERNAL_SYNC_URL = 'https://app-skd-cloud-api-prod.digita.sn/api/sage-sync/receive-invoices'; // test
 
         // Éléments DOM
         const elements = {

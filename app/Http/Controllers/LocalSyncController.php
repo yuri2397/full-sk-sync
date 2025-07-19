@@ -17,6 +17,10 @@ class LocalSyncController extends Controller
      * Dump les factures depuis la base comptable vers la table tampon
      * CORRIGÉ pour dates en string
      */
+    /**
+     * Dump les factures depuis la base comptable vers la table tampon
+     * CORRIGÉ pour dates en string
+     */
     public function dumpInvoices(Request $request)
     {
         try {
@@ -93,9 +97,18 @@ class LocalSyncController extends Controller
 
                 WHERE 
                     e.CT_Num LIKE '411%'
-                    AND e.JO_Num IN ('VTEM')
+                    AND e.JO_Num IN ('VTEM', 'RANO')
                     AND e.EC_Sens = 0
-                    AND (e.EC_Lettrage = '' OR e.EC_Lettrage IS NULL)
+                    
+                    -- === LOGIQUE DE LETTRAGE DIFFÉRENCIÉE ===
+                    AND (
+                        -- VTEM: Non lettrées seulement
+                        (e.JO_Num = 'VTEM' AND (e.EC_Lettrage = '' OR e.EC_Lettrage IS NULL))
+                        OR
+                        -- RANO: Lettrées ET non lettrées (tous les reports à nouveau)
+                        (e.JO_Num = 'RANO')
+                    )
+                    
                     AND e.EC_RefPiece IS NOT NULL
                     AND e.EC_Montant > 0
                     AND e.EC_Echeance >= ?";
@@ -106,6 +119,7 @@ class LocalSyncController extends Controller
                         SELECT 1 FROM invoice_sync_buffer isb 
                         WHERE isb.invoice_number = e.EC_RefPiece
                         AND isb.client_code = e.CT_Num
+                        AND isb.deleted_at IS NULL
                     )";
             }
 
