@@ -142,7 +142,7 @@ class HomeController extends Controller
     }
 
     /**
-     * Statistiques de recouvrement enrichies
+     * Statistiques de recouvrement enrichies (SQL Server compatible)
      */
     private function getRecoveryStats()
     {
@@ -153,14 +153,14 @@ class HomeController extends Controller
             SUM(CASE WHEN recovery_status = 'PROMISE_TO_PAY' THEN 1 ELSE 0 END) as promise_count,
             SUM(CASE WHEN recovery_status = 'LITIGATION' THEN 1 ELSE 0 END) as litigation_count,
             
-            SUM(CASE WHEN recovery_status = 'NEW' THEN balance_due ELSE 0 END) as new_amount,
-            SUM(CASE WHEN recovery_status = 'IN_PROGRESS' THEN balance_due ELSE 0 END) as in_progress_amount,
+            SUM(CASE WHEN recovery_status = 'NEW' THEN ISNULL(balance_due, 0) ELSE 0 END) as new_amount,
+            SUM(CASE WHEN recovery_status = 'IN_PROGRESS' THEN ISNULL(balance_due, 0) ELSE 0 END) as in_progress_amount,
             
-            COUNT(CASE WHEN next_action_date = CURDATE() THEN 1 END) as actions_today,
-            COUNT(CASE WHEN next_action_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 7 DAY) THEN 1 END) as actions_this_week,
+            COUNT(CASE WHEN CONVERT(date, next_action_date) = CONVERT(date, GETDATE()) THEN 1 END) as actions_today,
+            COUNT(CASE WHEN CONVERT(date, next_action_date) BETWEEN CONVERT(date, GETDATE()) AND DATEADD(day, 7, CONVERT(date, GETDATE())) THEN 1 END) as actions_this_week,
             
             COUNT(DISTINCT client_code) as unique_clients_pending,
-            AVG(days_overdue) as avg_days_overdue,
+            AVG(CAST(days_overdue as FLOAT)) as avg_days_overdue,
             MAX(days_overdue) as max_days_overdue
         ")->first();
 
@@ -302,22 +302,22 @@ class HomeController extends Controller
     }
 
     /**
-     * Métriques de performance
+     * Métriques de performance (SQL Server compatible)
      */
     private function getPerformanceMetrics()
     {
-        $today = now()->startOfDay();
-        $yesterday = now()->subDay()->startOfDay();
-        $weekAgo = now()->subWeek();
+        $today = now()->startOfDay()->format('Y-m-d H:i:s');
+        $yesterday = now()->subDay()->startOfDay()->format('Y-m-d H:i:s');
+        $weekAgo = now()->subWeek()->format('Y-m-d H:i:s');
 
         return [
-            'synced_today' => InvoiceSyncBuffer::where('synced_at', '>=', $today)->count(),
-            'synced_yesterday' => InvoiceSyncBuffer::whereBetween('synced_at', [$yesterday, $today])->count(),
-            'synced_this_week' => InvoiceSyncBuffer::where('synced_at', '>=', $weekAgo)->count(),
-            'failed_today' => InvoiceSyncBuffer::where('last_sync_attempt', '>=', $today)
+            'synced_today' => InvoiceSyncBuffer::whereRaw('synced_at >= ?', [$today])->count(),
+            'synced_yesterday' => InvoiceSyncBuffer::whereRaw('synced_at >= ? AND synced_at < ?', [$yesterday, $today])->count(),
+            'synced_this_week' => InvoiceSyncBuffer::whereRaw('synced_at >= ?', [$weekAgo])->count(),
+            'failed_today' => InvoiceSyncBuffer::whereRaw('last_sync_attempt >= ?', [$today])
                 ->where('sync_status', 'failed')->count(),
             'avg_sync_attempts' => InvoiceSyncBuffer::where('sync_status', 'synced')->avg('sync_attempts'),
-            'pending_actions_today' => InvoiceSyncBuffer::whereDate('next_action_date', $today)->count(),
+            'pending_actions_today' => InvoiceSyncBuffer::whereRaw('CONVERT(date, next_action_date) = CONVERT(date, GETDATE())')->count(),
         ];
     }
 
