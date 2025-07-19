@@ -405,10 +405,10 @@ class LocalSyncController extends Controller
 
             $updateData = [
                 'sync_status' => 'synced',
-                'synced_at' => $now,
+                'synced_at' => $now->format('Y-m-d'),
                 'sync_notes' => $notes,
                 'sync_attempts' => DB::raw('ISNULL(sync_attempts, 0) + 1'),
-                'last_sync_attempt' => $now,
+                'last_sync_attempt' => $now->format('Y-m-d'),
             ];
 
             if ($syncBatchId) {
