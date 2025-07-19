@@ -12,9 +12,14 @@ use Exception;
 class HomeController extends Controller
 {
     /**
-     * URL de l'application principale (à configurer)
+     * URL de l'application principale
      */
-    private $mainAppUrl = 'https://app-skd-cloud-api-prod.digita.sn'; // Mis à jour
+    private $mainAppUrl;
+
+    public function __construct()
+    {
+        $this->mainAppUrl = env('MAIN_APP_URL');
+    }
 
     /**
      * Afficher le dashboard avec toutes les données compilées
@@ -32,81 +37,51 @@ class HomeController extends Controller
     }
 
     /**
-     * Compiler toutes les données du dashboard ENRICHIES
+     * Compiler toutes les données du dashboard
      */
     private function compileDashboardData()
     {
-        // 1. Statistiques enrichies de la table tampon
-        $bufferStats = $this->getEnrichedBufferStats();
+        // 1. Statistiques de la table tampon
+        $bufferStats = $this->getBufferStats();
 
         // 2. Statistiques de la comptabilité
         $comptabilityStats = $this->getComptabilityStats();
 
-        // 3. Factures urgentes avec nouvelles priorités
+        // 3. Factures urgentes
         $urgentInvoices = $this->getUrgentInvoices();
 
-        // 4. Statistiques de recouvrement
-        $recoveryStats = $this->getRecoveryStats();
-
-        // 5. Activité récente enrichie
+        // 4. Dernières activités
         $recentActivity = $this->getRecentActivity();
 
-        // 6. Progression de synchronisation
+        // 5. Progression de synchronisation
         $syncProgress = $this->calculateSyncProgress($bufferStats, $comptabilityStats);
-
-        // 7. Métriques de performance
-        $performanceMetrics = $this->getPerformanceMetrics();
 
         return [
             'buffer_stats' => $bufferStats,
             'comptability_stats' => $comptabilityStats,
             'urgent_invoices' => $urgentInvoices,
-            'recovery_stats' => $recoveryStats,
             'recent_activity' => $recentActivity,
             'sync_progress' => $syncProgress,
-            'performance_metrics' => $performanceMetrics,
             'last_updated' => now()->toIso8601String()
         ];
     }
 
     /**
-     * Statistiques enrichies de la table tampon
+     * Obtenir les statistiques de la table tampon (SIMPLIFIÉ)
      */
-    private function getEnrichedBufferStats()
+    private function getBufferStats()
     {
         $stats = InvoiceSyncBuffer::selectRaw("
             COUNT(*) as total_invoices,
             SUM(CASE WHEN sync_status = 'pending' THEN 1 ELSE 0 END) as pending_invoices,
             SUM(CASE WHEN sync_status = 'synced' THEN 1 ELSE 0 END) as synced_invoices,
             SUM(CASE WHEN sync_status = 'failed' THEN 1 ELSE 0 END) as failed_invoices,
-            
-            -- Nouveaux montants basés sur balance_due
-            SUM(CASE WHEN sync_status = 'pending' THEN balance_due ELSE 0 END) as pending_amount,
-            SUM(CASE WHEN sync_status = 'synced' THEN balance_due ELSE 0 END) as synced_amount,
-            SUM(balance_due) as total_balance_due,
-            SUM(amount_paid) as total_amount_paid,
-            
-            -- Nouvelles priorités
+            SUM(CASE WHEN sync_status = 'pending' THEN ISNULL(balance_due, amount) ELSE 0 END) as pending_amount,
+            SUM(CASE WHEN sync_status = 'synced' THEN ISNULL(balance_due, amount) ELSE 0 END) as synced_amount,
             SUM(CASE WHEN sync_status = 'pending' AND priority = 'TRES_URGENT' THEN 1 ELSE 0 END) as tres_urgent_pending,
             SUM(CASE WHEN sync_status = 'pending' AND priority = 'URGENT' THEN 1 ELSE 0 END) as urgent_pending,
-            SUM(CASE WHEN sync_status = 'pending' AND priority = 'NORMAL' THEN 1 ELSE 0 END) as normal_pending,
-            SUM(CASE WHEN sync_status = 'pending' AND priority = 'SURVEILLANCE' THEN 1 ELSE 0 END) as surveillance_pending,
-            
-            -- Catégories de retard
-            SUM(CASE WHEN sync_status = 'pending' AND overdue_category = 'RETARD_PLUS_90' THEN 1 ELSE 0 END) as retard_90_plus,
-            SUM(CASE WHEN sync_status = 'pending' AND overdue_category = 'RETARD_61_90' THEN 1 ELSE 0 END) as retard_61_90,
-            SUM(CASE WHEN sync_status = 'pending' AND overdue_category = 'RETARD_31_60' THEN 1 ELSE 0 END) as retard_31_60,
-            SUM(CASE WHEN sync_status = 'pending' AND overdue_category = 'RETARD_1_30' THEN 1 ELSE 0 END) as retard_1_30,
-            SUM(CASE WHEN sync_status = 'pending' AND overdue_category = 'NON_ECHU' THEN 1 ELSE 0 END) as non_echu,
-            
-            -- Informations Sage
-            SUM(CASE WHEN journal_type = 'VTEM' THEN 1 ELSE 0 END) as vtem_count,
-            SUM(CASE WHEN journal_type = 'RANO' THEN 1 ELSE 0 END) as rano_count,
-            SUM(CASE WHEN is_lettred = 1 THEN 1 ELSE 0 END) as lettred_count,
-            
             MAX(CASE WHEN sync_status = 'synced' THEN synced_at END) as last_sync,
-            MAX(created_at) as last_dump,
-            MAX(last_sage_sync) as last_sage_sync
+            MAX(created_at) as last_dump
         ")->first();
 
         return [
@@ -114,106 +89,37 @@ class HomeController extends Controller
             'pending_invoices' => (int) $stats->pending_invoices,
             'synced_invoices' => (int) $stats->synced_invoices,
             'failed_invoices' => (int) $stats->failed_invoices,
-
             'pending_amount' => (float) $stats->pending_amount,
             'synced_amount' => (float) $stats->synced_amount,
-            'total_balance_due' => (float) $stats->total_balance_due,
-            'total_amount_paid' => (float) $stats->total_amount_paid,
-
             'tres_urgent_pending' => (int) $stats->tres_urgent_pending,
             'urgent_pending' => (int) $stats->urgent_pending,
-            'normal_pending' => (int) $stats->normal_pending,
-            'surveillance_pending' => (int) $stats->surveillance_pending,
-
-            'retard_90_plus' => (int) $stats->retard_90_plus,
-            'retard_61_90' => (int) $stats->retard_61_90,
-            'retard_31_60' => (int) $stats->retard_31_60,
-            'retard_1_30' => (int) $stats->retard_1_30,
-            'non_echu' => (int) $stats->non_echu,
-
-            'vtem_count' => (int) $stats->vtem_count,
-            'rano_count' => (int) $stats->rano_count,
-            'lettred_count' => (int) $stats->lettred_count,
-
             'last_sync' => $stats->last_sync,
             'last_dump' => $stats->last_dump,
-            'last_sage_sync' => $stats->last_sage_sync,
         ];
     }
 
     /**
-     * Statistiques de recouvrement enrichies (SQL Server compatible)
-     */
-    private function getRecoveryStats()
-    {
-        $stats = InvoiceSyncBuffer::selectRaw("
-            SUM(CASE WHEN recovery_status = 'NEW' THEN 1 ELSE 0 END) as new_count,
-            SUM(CASE WHEN recovery_status = 'IN_PROGRESS' THEN 1 ELSE 0 END) as in_progress_count,
-            SUM(CASE WHEN recovery_status = 'CONTACT_MADE' THEN 1 ELSE 0 END) as contact_made_count,
-            SUM(CASE WHEN recovery_status = 'PROMISE_TO_PAY' THEN 1 ELSE 0 END) as promise_count,
-            SUM(CASE WHEN recovery_status = 'LITIGATION' THEN 1 ELSE 0 END) as litigation_count,
-            
-            SUM(CASE WHEN recovery_status = 'NEW' THEN ISNULL(balance_due, 0) ELSE 0 END) as new_amount,
-            SUM(CASE WHEN recovery_status = 'IN_PROGRESS' THEN ISNULL(balance_due, 0) ELSE 0 END) as in_progress_amount,
-            
-            COUNT(CASE WHEN CONVERT(date, next_action_date) = CONVERT(date, GETDATE()) THEN 1 END) as actions_today,
-            COUNT(CASE WHEN CONVERT(date, next_action_date) BETWEEN CONVERT(date, GETDATE()) AND DATEADD(day, 7, CONVERT(date, GETDATE())) THEN 1 END) as actions_this_week,
-            
-            COUNT(DISTINCT client_code) as unique_clients_pending,
-            AVG(CAST(days_overdue as FLOAT)) as avg_days_overdue,
-            MAX(days_overdue) as max_days_overdue
-        ")->first();
-
-        return [
-            'new_count' => (int) $stats->new_count,
-            'in_progress_count' => (int) $stats->in_progress_count,
-            'contact_made_count' => (int) $stats->contact_made_count,
-            'promise_count' => (int) $stats->promise_count,
-            'litigation_count' => (int) $stats->litigation_count,
-
-            'new_amount' => (float) $stats->new_amount,
-            'in_progress_amount' => (float) $stats->in_progress_amount,
-
-            'actions_today' => (int) $stats->actions_today,
-            'actions_this_week' => (int) $stats->actions_this_week,
-
-            'unique_clients_pending' => (int) $stats->unique_clients_pending,
-            'avg_days_overdue' => round((float) $stats->avg_days_overdue, 1),
-            'max_days_overdue' => (int) $stats->max_days_overdue,
-        ];
-    }
-
-    /**
-     * Statistiques de la comptabilité mises à jour
+     * Obtenir les statistiques de la comptabilité (SIMPLIFIÉ)
      */
     private function getComptabilityStats()
     {
         try {
             $stats = DB::select("
-                SELECT 
+                SELECT
                     COUNT(*) as total_invoices,
                     SUM(e.EC_Montant) as total_amount,
-                    SUM(e.EC_Montant - ISNULL(e.EC_MontantRegle, 0)) as total_balance_due,
                     COUNT(DISTINCT e.CT_Num) as unique_clients,
-                    
                     COUNT(CASE WHEN DATEDIFF(DAY, e.EC_Echeance, GETDATE()) > 90 THEN 1 END) as overdue_90_plus,
-                    COUNT(CASE WHEN DATEDIFF(DAY, e.EC_Echeance, GETDATE()) BETWEEN 61 AND 90 THEN 1 END) as overdue_61_90,
-                    COUNT(CASE WHEN DATEDIFF(DAY, e.EC_Echeance, GETDATE()) BETWEEN 31 AND 60 THEN 1 END) as overdue_31_60,
-                    COUNT(CASE WHEN DATEDIFF(DAY, e.EC_Echeance, GETDATE()) BETWEEN 1 AND 30 THEN 1 END) as overdue_1_30,
-                    
-                    COUNT(CASE WHEN e.JO_Num = 'VTEM' THEN 1 END) as vtem_total,
-                    COUNT(CASE WHEN e.JO_Num = 'RANO' THEN 1 END) as rano_total,
-                    
-                    SUM(CASE WHEN DATEDIFF(DAY, e.EC_Echeance, GETDATE()) > 90 AND e.EC_Montant > 500000 THEN e.EC_Montant ELSE 0 END) as tres_urgent_amount
+                    COUNT(CASE WHEN DATEDIFF(DAY, e.EC_Echeance, GETDATE()) BETWEEN 31 AND 90 THEN 1 END) as overdue_31_90
 
                 FROM F_ECRITUREC e
-                LEFT JOIN F_COMPTET c ON e.CT_Num = c.CT_Num
 
-                WHERE 
+                WHERE
                     e.CT_Num LIKE '411%'
                     AND e.JO_Num IN ('VTEM', 'RANO')
                     AND e.EC_Sens = 0
                     AND (e.EC_Lettrage = '' OR e.EC_Lettrage IS NULL)
+                    AND e.EC_RefPiece IS NOT NULL
                     AND e.EC_Montant > 0
                     AND e.EC_Echeance >= '2020-01-01'
             ");
@@ -223,106 +129,54 @@ class HomeController extends Controller
             return [
                 'total_invoices' => (int) $result->total_invoices,
                 'total_amount' => (float) $result->total_amount,
-                'total_balance_due' => (float) $result->total_balance_due,
                 'unique_clients' => (int) $result->unique_clients,
                 'overdue_90_plus' => (int) $result->overdue_90_plus,
-                'overdue_61_90' => (int) $result->overdue_61_90,
-                'overdue_31_60' => (int) $result->overdue_31_60,
-                'overdue_1_30' => (int) $result->overdue_1_30,
-                'vtem_total' => (int) $result->vtem_total,
-                'rano_total' => (int) $result->rano_total,
-                'tres_urgent_amount' => (float) $result->tres_urgent_amount,
+                'overdue_31_90' => (int) $result->overdue_31_90,
             ];
         } catch (Exception $e) {
             Log::error('Erreur stats comptabilité: ' . $e->getMessage());
             return [
                 'total_invoices' => 0,
                 'total_amount' => 0,
-                'total_balance_due' => 0,
                 'unique_clients' => 0,
                 'overdue_90_plus' => 0,
-                'overdue_61_90' => 0,
-                'overdue_31_60' => 0,
-                'overdue_1_30' => 0,
-                'vtem_total' => 0,
-                'rano_total' => 0,
-                'tres_urgent_amount' => 0,
+                'overdue_31_90' => 0,
             ];
         }
     }
 
     /**
-     * Factures urgentes avec nouvelles priorités
+     * Obtenir les factures urgentes (SIMPLIFIÉ)
      */
     private function getUrgentInvoices()
     {
         return InvoiceSyncBuffer::where('sync_status', 'pending')
             ->whereIn('priority', ['TRES_URGENT', 'URGENT'])
             ->orderByRaw("
-                CASE 
+                CASE
                     WHEN priority = 'TRES_URGENT' THEN 1
                     WHEN priority = 'URGENT' THEN 2
                     ELSE 3
                 END
             ")
             ->orderBy('due_date')
-            ->limit(15)
-            ->get([
-                'id',
-                'invoice_number',
-                'client_name',
-                'client_code',
-                'balance_due',
-                'due_date',
-                'priority',
-                'days_overdue',
-                'overdue_category',
-                'recovery_status',
-                'next_action_date'
-            ]);
+            ->limit(10)
+            ->get(['id', 'invoice_number', 'client_name', 'balance_due', 'amount', 'due_date', 'priority', 'days_overdue']);
     }
 
     /**
-     * Activité récente enrichie
+     * Obtenir l'activité récente (SIMPLIFIÉ)
      */
     private function getRecentActivity()
     {
         return InvoiceSyncBuffer::where('sync_status', 'synced')
             ->orderBy('synced_at', 'desc')
-            ->limit(8)
-            ->get([
-                'invoice_number',
-                'client_name',
-                'balance_due',
-                'synced_at',
-                'sync_notes',
-                'priority',
-                'sync_batch_id'
-            ]);
+            ->limit(5)
+            ->get(['invoice_number', 'client_name', 'balance_due', 'amount', 'synced_at', 'sync_notes']);
     }
 
     /**
-     * Métriques de performance (SQL Server compatible)
-     */
-    private function getPerformanceMetrics()
-    {
-        $today = now()->startOfDay()->format('Y-m-d H:i:s');
-        $yesterday = now()->subDay()->startOfDay()->format('Y-m-d H:i:s');
-        $weekAgo = now()->subWeek()->format('Y-m-d H:i:s');
-
-        return [
-            'synced_today' => InvoiceSyncBuffer::whereRaw('synced_at >= ?', [$today])->count(),
-            'synced_yesterday' => InvoiceSyncBuffer::whereRaw('synced_at >= ? AND synced_at < ?', [$yesterday, $today])->count(),
-            'synced_this_week' => InvoiceSyncBuffer::whereRaw('synced_at >= ?', [$weekAgo])->count(),
-            'failed_today' => InvoiceSyncBuffer::whereRaw('last_sync_attempt >= ?', [$today])
-                ->where('sync_status', 'failed')->count(),
-            'avg_sync_attempts' => InvoiceSyncBuffer::where('sync_status', 'synced')->avg('sync_attempts'),
-            'pending_actions_today' => InvoiceSyncBuffer::whereRaw('CONVERT(date, next_action_date) = CONVERT(date, GETDATE())')->count(),
-        ];
-    }
-
-    /**
-     * Progression de synchronisation enrichie
+     * Calculer la progression de synchronisation
      */
     private function calculateSyncProgress($bufferStats, $comptabilityStats)
     {
@@ -334,75 +188,61 @@ class HomeController extends Controller
             ? round(($bufferStats['synced_invoices'] / $bufferStats['total_invoices']) * 100, 2)
             : 0;
 
-        $balanceProgress = $comptabilityStats['total_balance_due'] > 0
-            ? round(($bufferStats['synced_amount'] / $comptabilityStats['total_balance_due']) * 100, 2)
-            : 0;
-
         return [
             'dumped_percentage' => $dumpedPercentage,
             'synced_percentage' => $syncedPercentage,
-            'balance_synced_percentage' => $balanceProgress,
             'remaining_to_dump' => max(0, $comptabilityStats['total_invoices'] - $bufferStats['total_invoices']),
-            'remaining_to_sync' => $bufferStats['pending_invoices'],
-            'efficiency_score' => $this->calculateEfficiencyScore($bufferStats),
+            'remaining_to_sync' => $bufferStats['pending_invoices']
         ];
     }
 
     /**
-     * Score d'efficacité de synchronisation
+     * Données par défaut en cas d'erreur
      */
-    private function calculateEfficiencyScore($bufferStats)
+    private function getDefaultDashboardData()
     {
-        if ($bufferStats['total_invoices'] == 0) return 0;
-
-        $syncedRatio = $bufferStats['synced_invoices'] / $bufferStats['total_invoices'];
-        $failedRatio = $bufferStats['failed_invoices'] / $bufferStats['total_invoices'];
-
-        return round((($syncedRatio * 100) - ($failedRatio * 50)), 1);
+        return [
+            'buffer_stats' => [
+                'total_invoices' => 0,
+                'pending_invoices' => 0,
+                'synced_invoices' => 0,
+                'failed_invoices' => 0,
+                'pending_amount' => 0,
+                'synced_amount' => 0,
+                'tres_urgent_pending' => 0,
+                'urgent_pending' => 0,
+                'last_sync' => null,
+                'last_dump' => null,
+            ],
+            'comptability_stats' => [
+                'total_invoices' => 0,
+                'total_amount' => 0,
+                'unique_clients' => 0,
+                'overdue_90_plus' => 0,
+                'overdue_31_90' => 0,
+            ],
+            'urgent_invoices' => collect(),
+            'recent_activity' => collect(),
+            'sync_progress' => [
+                'dumped_percentage' => 0,
+                'synced_percentage' => 0,
+                'remaining_to_dump' => 0,
+                'remaining_to_sync' => 0
+            ],
+            'last_updated' => now()->toIso8601String()
+        ];
     }
 
     /**
-     * API: Statistiques enrichies en temps réel
-     */
-    public function getStats()
-    {
-        try {
-            $dashboardData = $this->compileDashboardData();
-
-            return response()->json([
-                'success' => true,
-                'stats' => [
-                    'buffer' => $dashboardData['buffer_stats'],
-                    'comptability' => $dashboardData['comptability_stats'],
-                    'recovery' => $dashboardData['recovery_stats'],
-                    'sync_progress' => $dashboardData['sync_progress'],
-                    'performance' => $dashboardData['performance_metrics'],
-                    'urgent_count' => $dashboardData['urgent_invoices']->count(),
-                    'last_updated' => $dashboardData['last_updated']
-                ]
-            ]);
-        } catch (Exception $e) {
-            Log::error('Erreur récupération stats: ' . $e->getMessage());
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Erreur lors de la récupération des statistiques',
-                'error' => $e->getMessage()
-            ], 500);
-        }
-    }
-
-    /**
-     * API: Envoyer les factures vers l'application principale (AMÉLIORÉ)
+     * Envoyer les factures non synchronisées vers l'application principale (SIMPLIFIÉ)
      */
     public function pushUnsyncedInvoices(Request $request)
     {
         try {
             $limit = min((int)$request->input('limit', 1000), 2000);
             $priority = $request->input('priority');
-            $forceSync = $request->boolean('force_sync', false);
 
-            // Récupérer les factures avec les nouveaux champs
+            // Récupérer les factures non synchronisées
             $query = InvoiceSyncBuffer::where('sync_status', 'pending');
 
             if ($priority) {
@@ -410,16 +250,15 @@ class HomeController extends Controller
             }
 
             $invoices = $query->orderByRaw("
-                    CASE 
+                    CASE
                         WHEN priority = 'TRES_URGENT' THEN 1
                         WHEN priority = 'URGENT' THEN 2
                         WHEN priority = 'NORMAL' THEN 3
-                        WHEN priority = 'SURVEILLANCE' THEN 4
-                        ELSE 5
+                        ELSE 4
                     END
                 ")
                 ->orderBy('due_date', 'asc')
-                ->orderBy('balance_due', 'desc')
+                ->orderBy(DB::raw('ISNULL(balance_due, amount)'), 'desc')
                 ->limit($limit)
                 ->get();
 
@@ -431,7 +270,7 @@ class HomeController extends Controller
                 ]);
             }
 
-            // Payload enrichi avec nouveaux champs
+            // Préparer les données pour l'envoi (format simplifié)
             $payload = [
                 'invoices' => $invoices->map(function ($invoice) {
                     return [
@@ -442,39 +281,21 @@ class HomeController extends Controller
                         'due_date' => $invoice->due_date,
                         'amount' => $invoice->amount,
                         'invoice_total' => $invoice->invoice_total,
-                        'amount_paid' => $invoice->amount_paid,
-                        'balance_due' => $invoice->balance_due,
+                        'balance_due' => $invoice->balance_due ?? $invoice->amount,
                         'currency' => 'XOF',
-
                         'overdue_category' => $invoice->overdue_category,
                         'days_overdue' => $invoice->days_overdue,
                         'priority' => $invoice->priority,
-
-                        'recovery_status' => $invoice->recovery_status,
-                        'last_contact_date' => $invoice->last_contact_date,
-                        'next_action_date' => $invoice->next_action_date,
-
-                        'journal_type' => $invoice->journal_type,
-                        'sage_lettrage_code' => $invoice->sage_lettrage_code,
-                        'is_lettred' => $invoice->is_lettred,
-
                         'client' => [
                             'code' => $invoice->client_code,
                             'name' => $invoice->client_name,
                             'phone' => $invoice->client_phone,
                             'email' => $invoice->client_email,
                             'address' => $invoice->client_address,
-                            'city' => $invoice->client_city,
-                            'commercial_contact' => $invoice->commercial_contact,
-                            'credit_limit' => $invoice->client_credit_limit,
-                            'payment_terms' => $invoice->client_payment_terms,
+                            'commercial_contact' => $invoice->commercial_contact
                         ],
-
                         'description' => $invoice->description,
                         'source_entry_id' => $invoice->source_entry_id,
-                        'sage_guid' => $invoice->sage_guid,
-                        'document_guid' => $invoice->document_guid,
-                        'sync_batch_id' => $invoice->sync_batch_id,
                         'created_at' => $invoice->created_at,
                         'updated_at' => $invoice->updated_at
                     ];
@@ -483,9 +304,7 @@ class HomeController extends Controller
                     'total_count' => $invoices->count(),
                     'timestamp' => now()->toIso8601String(),
                     'source' => 'laravel-sync-buffer-v2',
-                    'version' => '2.0',
-                    'priority_filter' => $priority,
-                    'force_sync' => $forceSync,
+                    'version' => '2.0'
                 ]
             ];
 
@@ -500,17 +319,17 @@ class HomeController extends Controller
 
             if ($response->successful()) {
                 $responseData = $response->json();
-                $batchId = 'batch_' . now()->format('YmdHis') . '_' . substr(md5(json_encode($payload)), 0, 8);
+                $batchId = 'batch_' . now()->format('YmdHis');
 
-                // Marquer comme synchronisées avec batch tracking
+                // Marquer les factures comme synchronisées
                 $invoiceIds = $invoices->pluck('id')->toArray();
                 $updatedCount = InvoiceSyncBuffer::whereIn('id', $invoiceIds)
                     ->update([
                         'sync_status' => 'synced',
                         'synced_at' => now(),
-                        'sync_notes' => 'Envoyé vers application principale v2: ' . ($responseData['message'] ?? 'OK'),
+                        'sync_notes' => 'Envoyé vers application principale: ' . ($responseData['message'] ?? 'OK'),
                         'sync_batch_id' => $batchId,
-                        'sync_attempts' => DB::raw('sync_attempts + 1'),
+                        'sync_attempts' => DB::raw('ISNULL(sync_attempts, 0) + 1'),
                         'last_sync_attempt' => now(),
                     ]);
 
@@ -522,12 +341,12 @@ class HomeController extends Controller
                     'main_app_response' => $responseData
                 ]);
             } else {
-                // Marquer comme échouées
+                // Marquer les factures comme échouées
                 $invoiceIds = $invoices->pluck('id')->toArray();
                 InvoiceSyncBuffer::whereIn('id', $invoiceIds)
                     ->update([
                         'sync_status' => 'failed',
-                        'sync_attempts' => DB::raw('sync_attempts + 1'),
+                        'sync_attempts' => DB::raw('ISNULL(sync_attempts, 0) + 1'),
                         'last_sync_attempt' => now(),
                         'last_error_message' => 'HTTP ' . $response->status() . ': ' . $response->body()
                     ]);
@@ -551,82 +370,31 @@ class HomeController extends Controller
     }
 
     /**
-     * Données par défaut enrichies
+     * Obtenir les statistiques en temps réel (API endpoint)
      */
-    private function getDefaultDashboardData()
+    public function getStats()
     {
-        return [
-            'buffer_stats' => [
-                'total_invoices' => 0,
-                'pending_invoices' => 0,
-                'synced_invoices' => 0,
-                'failed_invoices' => 0,
-                'pending_amount' => 0,
-                'synced_amount' => 0,
-                'total_balance_due' => 0,
-                'total_amount_paid' => 0,
-                'tres_urgent_pending' => 0,
-                'urgent_pending' => 0,
-                'normal_pending' => 0,
-                'surveillance_pending' => 0,
-                'retard_90_plus' => 0,
-                'retard_61_90' => 0,
-                'retard_31_60' => 0,
-                'retard_1_30' => 0,
-                'non_echu' => 0,
-                'vtem_count' => 0,
-                'rano_count' => 0,
-                'lettred_count' => 0,
-                'last_sync' => null,
-                'last_dump' => null,
-                'last_sage_sync' => null,
-            ],
-            'comptability_stats' => [
-                'total_invoices' => 0,
-                'total_amount' => 0,
-                'total_balance_due' => 0,
-                'unique_clients' => 0,
-                'overdue_90_plus' => 0,
-                'overdue_61_90' => 0,
-                'overdue_31_60' => 0,
-                'overdue_1_30' => 0,
-                'vtem_total' => 0,
-                'rano_total' => 0,
-                'tres_urgent_amount' => 0,
-            ],
-            'recovery_stats' => [
-                'new_count' => 0,
-                'in_progress_count' => 0,
-                'contact_made_count' => 0,
-                'promise_count' => 0,
-                'litigation_count' => 0,
-                'new_amount' => 0,
-                'in_progress_amount' => 0,
-                'actions_today' => 0,
-                'actions_this_week' => 0,
-                'unique_clients_pending' => 0,
-                'avg_days_overdue' => 0,
-                'max_days_overdue' => 0,
-            ],
-            'urgent_invoices' => collect(),
-            'recent_activity' => collect(),
-            'sync_progress' => [
-                'dumped_percentage' => 0,
-                'synced_percentage' => 0,
-                'balance_synced_percentage' => 0,
-                'remaining_to_dump' => 0,
-                'remaining_to_sync' => 0,
-                'efficiency_score' => 0
-            ],
-            'performance_metrics' => [
-                'synced_today' => 0,
-                'synced_yesterday' => 0,
-                'synced_this_week' => 0,
-                'failed_today' => 0,
-                'avg_sync_attempts' => 0,
-                'pending_actions_today' => 0,
-            ],
-            'last_updated' => now()->toIso8601String()
-        ];
+        try {
+            $dashboardData = $this->compileDashboardData();
+
+            return response()->json([
+                'success' => true,
+                'stats' => [
+                    'buffer' => $dashboardData['buffer_stats'],
+                    'comptability' => $dashboardData['comptability_stats'],
+                    'sync_progress' => $dashboardData['sync_progress'],
+                    'urgent_count' => $dashboardData['urgent_invoices']->count(),
+                    'last_updated' => $dashboardData['last_updated']
+                ]
+            ]);
+        } catch (Exception $e) {
+            Log::error('Erreur récupération stats: ' . $e->getMessage());
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Erreur lors de la récupération des statistiques',
+                'error' => $e->getMessage()
+            ], 500);
+        }
     }
 }
