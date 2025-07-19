@@ -99,15 +99,13 @@ class LocalSyncController extends Controller
                     AND e.EC_Echeance >= ?";
 
             // CONDITION IMPORTANTE : Ignorer les factures déjà dumpées (sauf si force_refresh)
-            if (!$forceRefresh) {
-                $sql .= "
+            $sql .= "
                     AND NOT EXISTS (
                         SELECT 1 FROM invoice_sync_buffer isb 
                         WHERE isb.invoice_number = e.EC_RefPiece
                         AND isb.client_code = e.CT_Num
                         AND isb.deleted_at IS NULL
                     )";
-            }
 
             $sql .= "
                 ORDER BY 
