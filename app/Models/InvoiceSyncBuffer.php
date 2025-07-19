@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Carbon\Carbon;
 
 class InvoiceSyncBuffer extends Model
 {
@@ -175,7 +176,7 @@ class InvoiceSyncBuffer extends Model
     public function scopeUrgent(Builder $query): Builder
     {
         return $query->whereIn('priority', [
-            self::PRIORITY_URGENT,
+            self::PRIORITY_URGENT, 
             self::PRIORITY_TRES_URGENT
         ]);
     }
@@ -229,11 +230,13 @@ class InvoiceSyncBuffer extends Model
 
     public function markAsSynced(string $notes = null, string $batchId = null): void
     {
+        $now = Carbon::now();
+        
         $updateData = [
             'sync_status' => self::STATUS_SYNCED,
-            'synced_at' => now(),
+            'synced_at' => $now->format('Y-m-d H:i:s.v'),
             'sync_attempts' => $this->sync_attempts + 1,
-            'last_sync_attempt' => now(),
+            'last_sync_attempt' => $now->format('Y-m-d H:i:s.v'),
         ];
 
         if ($notes) {
@@ -249,10 +252,12 @@ class InvoiceSyncBuffer extends Model
 
     public function markAsFailed(string $errorMessage): void
     {
+        $now = Carbon::now();
+        
         $this->update([
             'sync_status' => self::STATUS_FAILED,
             'sync_attempts' => $this->sync_attempts + 1,
-            'last_sync_attempt' => now(),
+            'last_sync_attempt' => $now->format('Y-m-d H:i:s.v'),
             'last_error_message' => $errorMessage,
         ]);
     }
@@ -322,7 +327,7 @@ class InvoiceSyncBuffer extends Model
     public function getIsUrgentAttribute(): bool
     {
         return in_array($this->priority, [
-            self::PRIORITY_URGENT,
+            self::PRIORITY_URGENT, 
             self::PRIORITY_TRES_URGENT
         ]);
     }
@@ -337,7 +342,7 @@ class InvoiceSyncBuffer extends Model
 
     public function getOverdueCategoryTextAttribute(): string
     {
-        return match ($this->overdue_category) {
+        return match($this->overdue_category) {
             self::OVERDUE_NON_ECHU => 'Non échu',
             self::OVERDUE_1_30 => 'Retard 1-30 jours',
             self::OVERDUE_31_60 => 'Retard 31-60 jours',
@@ -349,7 +354,7 @@ class InvoiceSyncBuffer extends Model
 
     public function getPriorityTextAttribute(): string
     {
-        return match ($this->priority) {
+        return match($this->priority) {
             self::PRIORITY_SURVEILLANCE => 'Surveillance',
             self::PRIORITY_NORMAL => 'Normal',
             self::PRIORITY_URGENT => 'Urgent',
@@ -360,7 +365,7 @@ class InvoiceSyncBuffer extends Model
 
     public function getRecoveryStatusTextAttribute(): string
     {
-        return match ($this->recovery_status) {
+        return match($this->recovery_status) {
             self::RECOVERY_NEW => 'Nouveau',
             self::RECOVERY_IN_PROGRESS => 'En cours',
             self::RECOVERY_CONTACT_MADE => 'Contact établi',
@@ -374,7 +379,7 @@ class InvoiceSyncBuffer extends Model
 
     public function getPriorityColorAttribute(): string
     {
-        return match ($this->priority) {
+        return match($this->priority) {
             self::PRIORITY_TRES_URGENT => '#dc2626', // Rouge foncé
             self::PRIORITY_URGENT => '#ef4444',      // Rouge
             self::PRIORITY_NORMAL => '#f59e0b',      // Orange
@@ -385,7 +390,7 @@ class InvoiceSyncBuffer extends Model
 
     public function getSyncStatusColorAttribute(): string
     {
-        return match ($this->sync_status) {
+        return match($this->sync_status) {
             self::STATUS_SYNCED => '#10b981',    // Vert
             self::STATUS_PENDING => '#f59e0b',   // Orange
             self::STATUS_FAILED => '#ef4444',    // Rouge

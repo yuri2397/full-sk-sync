@@ -7,6 +7,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
+App\Http\Controllers\Carbon
 use Exception;
 
 class LocalSyncController extends Controller
@@ -383,8 +384,8 @@ class LocalSyncController extends Controller
         }
     }
 
-    /**
-     * Marquer des factures comme synchronisées avec tracking amélioré (CORRIGÉ)
+/**
+     * Marquer des factures comme synchronisées avec tracking amélioré (CORRIGÉ pour SQL Server)
      */
     public function markAsSynced(Request $request)
     {
@@ -400,15 +401,17 @@ class LocalSyncController extends Controller
                 ], 400);
             }
 
-            // CORRECTION : Utiliser Carbon/now() pour les dates y-d-m
-            $now = now();
+            // CORRECTION : Utiliser Carbon avec format explicite pour SQL Server
+            $now = Carbon::now();
+            $syncedAt = $now->format('Y-m-d H:i:s.v'); // Format avec millisecondes pour SQL Server
+            $lastSyncAttempt = $now->format('Y-m-d H:i:s.v');
 
             $updateData = [
                 'sync_status' => 'synced',
-                'synced_at' => $now->format('Y-m-d'),
+                'synced_at' => $syncedAt,
                 'sync_notes' => $notes,
                 'sync_attempts' => DB::raw('ISNULL(sync_attempts, 0) + 1'),
-                'last_sync_attempt' => $now->format('Y-m-d'),
+                'last_sync_attempt' => $lastSyncAttempt,
             ];
 
             if ($syncBatchId) {
@@ -423,10 +426,15 @@ class LocalSyncController extends Controller
                 'success' => true,
                 'message' => "{$updatedCount} facture(s) marquée(s) comme synchronisée(s)",
                 'updated_count' => $updatedCount,
-                'sync_batch_id' => $syncBatchId
+                'sync_batch_id' => $syncBatchId,
+                'synced_at' => $syncedAt
             ]);
+
         } catch (Exception $e) {
-            Log::error('Erreur marquage synchronisé: ' . $e->getMessage());
+            Log::error('Erreur marquage synchronisé: ' . $e->getMessage(), [
+                'invoice_ids' => $invoiceIds ?? [],
+                'trace' => $e->getTraceAsString()
+            ]);
 
             return response()->json([
                 'success' => false,
@@ -437,7 +445,7 @@ class LocalSyncController extends Controller
     }
 
     /**
-     * Marquer des tentatives de synchronisation échouées (CORRIGÉ)
+     * Marquer des tentatives de synchronisation échouées (CORRIGÉ pour SQL Server)
      */
     public function markAsFailed(Request $request)
     {
@@ -445,14 +453,22 @@ class LocalSyncController extends Controller
             $invoiceIds = $request->input('invoice_ids', []);
             $errorMessage = $request->input('error_message', 'Erreur de synchronisation');
 
-            // CORRECTION : Utiliser Carbon/now() pour les dates
-            $now = now();
+            if (empty($invoiceIds)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Aucune facture spécifiée'
+                ], 400);
+            }
+
+            // CORRECTION : Format datetime explicite pour SQL Server
+            $now = Carbon::now();
+            $lastSyncAttempt = $now->format('Y-m-d H:i:s.v');
 
             $updatedCount = InvoiceSyncBuffer::whereIn('id', $invoiceIds)
                 ->update([
                     'sync_status' => 'failed',
                     'sync_attempts' => DB::raw('ISNULL(sync_attempts, 0) + 1'),
-                    'last_sync_attempt' => $now,
+                    'last_sync_attempt' => $lastSyncAttempt,
                     'last_error_message' => $errorMessage,
                 ]);
 
@@ -461,8 +477,12 @@ class LocalSyncController extends Controller
                 'message' => "{$updatedCount} facture(s) marquée(s) comme échouée(s)",
                 'updated_count' => $updatedCount
             ]);
+
         } catch (Exception $e) {
-            Log::error('Erreur marquage échec: ' . $e->getMessage());
+            Log::error('Erreur marquage échec: ' . $e->getMessage(), [
+                'invoice_ids' => $invoiceIds ?? [],
+                'trace' => $e->getTraceAsString()
+            ]);
 
             return response()->json([
                 'success' => false,

@@ -234,7 +234,7 @@ class HomeController extends Controller
     }
 
     /**
-     * Envoyer les factures non synchronisées vers l'application principale (SIMPLIFIÉ)
+     * Envoyer les factures non synchronisées vers l'application principale (CORRIGÉ pour SQL Server)
      */
     public function pushUnsyncedInvoices(Request $request)
     {
@@ -321,17 +321,20 @@ class HomeController extends Controller
                 $responseData = $response->json();
                 $batchId = 'batch_' . now()->format('YmdHis');
 
-                // Marquer les factures comme synchronisées (CORRIGÉ)
-                $now = now();
+                // CORRECTION : Utiliser Carbon avec format explicite pour SQL Server
+                $now = Carbon::now();
+                $syncedAt = $now->format('Y-m-d H:i:s.v');
+                $lastSyncAttempt = $now->format('Y-m-d H:i:s.v');
                 $invoiceIds = $invoices->pluck('id')->toArray();
+
                 $updatedCount = InvoiceSyncBuffer::whereIn('id', $invoiceIds)
                     ->update([
                         'sync_status' => 'synced',
-                        'synced_at' => $now,
+                        'synced_at' => $syncedAt,
                         'sync_notes' => 'Envoyé vers application principale: ' . ($responseData['message'] ?? 'OK'),
                         'sync_batch_id' => $batchId,
                         'sync_attempts' => DB::raw('ISNULL(sync_attempts, 0) + 1'),
-                        'last_sync_attempt' => $now,
+                        'last_sync_attempt' => $lastSyncAttempt,
                     ]);
 
                 return response()->json([
@@ -341,15 +344,18 @@ class HomeController extends Controller
                     'batch_id' => $batchId,
                     'main_app_response' => $responseData
                 ]);
+
             } else {
-                // Marquer les factures comme échouées (CORRIGÉ)
-                $now = now();
+                // CORRECTION : Format datetime pour les échecs aussi
+                $now = Carbon::now();
+                $lastSyncAttempt = $now->format('Y-m-d H:i:s.v');
                 $invoiceIds = $invoices->pluck('id')->toArray();
+
                 InvoiceSyncBuffer::whereIn('id', $invoiceIds)
                     ->update([
                         'sync_status' => 'failed',
                         'sync_attempts' => DB::raw('ISNULL(sync_attempts, 0) + 1'),
-                        'last_sync_attempt' => $now,
+                        'last_sync_attempt' => $lastSyncAttempt,
                         'last_error_message' => 'HTTP ' . $response->status() . ': ' . $response->body()
                     ]);
 
@@ -360,8 +366,11 @@ class HomeController extends Controller
                     'details' => $response->body()
                 ], 500);
             }
+
         } catch (Exception $e) {
-            Log::error('Erreur push factures: ' . $e->getMessage());
+            Log::error('Erreur push factures: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString()
+            ]);
 
             return response()->json([
                 'success' => false,
