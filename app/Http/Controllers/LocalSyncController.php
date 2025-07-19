@@ -91,7 +91,7 @@ class LocalSyncController extends Controller
 
                 WHERE 
                     e.CT_Num LIKE '411%'
-                    AND e.JO_Num IN ('VTEM', 'RANO')
+                    AND e.JO_Num IN ('VTEM')
                     AND e.EC_Sens = 0
                     AND (e.EC_Lettrage = '' OR e.EC_Lettrage IS NULL)
                     AND e.EC_RefPiece IS NOT NULL
