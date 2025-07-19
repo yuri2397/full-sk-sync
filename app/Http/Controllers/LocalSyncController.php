@@ -7,14 +7,15 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
-App\Http\Controllers\Carbon
+use Illuminate\Support\Carbon;
+
 use Exception;
 
 class LocalSyncController extends Controller
 {
     /**
      * Dump les factures depuis la base comptable vers la table tampon
-     * Compatible avec la migration améliorée
+     * CORRIGÉ pour dates en string
      */
     public function dumpInvoices(Request $request)
     {
@@ -24,7 +25,7 @@ class LocalSyncController extends Controller
             $forceRefresh = $request->boolean('force_refresh', false);
             $batchId = 'batch_' . now()->format('Y_m_d_H_i_s') . '_' . Str::random(8);
 
-            // REQUÊTE CORRIGÉE - TOUJOURS ignorer les factures déjà dumpées (sauf si force_refresh)
+            // Requête SQL identique
             $sql = "
                 SELECT 
                     -- === INFORMATIONS CLIENT ===
@@ -99,14 +100,12 @@ class LocalSyncController extends Controller
                     AND e.EC_Montant > 0
                     AND e.EC_Echeance >= ?";
 
-            // CONDITION IMPORTANTE : Ignorer les factures déjà dumpées (sauf si force_refresh)
             if (!$forceRefresh) {
                 $sql .= "
                     AND NOT EXISTS (
                         SELECT 1 FROM invoice_sync_buffer isb 
                         WHERE isb.invoice_number = e.EC_RefPiece
                         AND isb.client_code = e.CT_Num
-                        AND isb.deleted_at IS NULL
                     )";
             }
 
@@ -133,7 +132,7 @@ class LocalSyncController extends Controller
 
             foreach ($invoices as $invoice) {
                 try {
-                    // Données enrichies pour la nouvelle migration
+                    // CORRECTION : Conversion des dates en string AVANT insertion
                     $data = [
                         'invoice_number' => $invoice->invoice_number,
                         'invoice_reference' => $invoice->invoice_reference,
@@ -143,10 +142,12 @@ class LocalSyncController extends Controller
                         'invoice_total' => (float) $invoice->invoice_total,
                         'amount_paid' => (float) $invoice->amount_paid,
                         'balance_due' => (float) $invoice->balance_due,
+
+                        // DATES CONVERTIES EN STRING
                         'invoice_date' => $invoice->invoice_date ? date('Y-m-d', strtotime($invoice->invoice_date)) : null,
                         'due_date' => $invoice->due_date ? date('Y-m-d', strtotime($invoice->due_date)) : null,
 
-                        // Nouveaux champs Sage
+                        // Informations Sage
                         'journal_type' => $invoice->journal_type,
                         'sage_lettrage_code' => $invoice->sage_lettrage_code,
                         'is_lettred' => (bool) $invoice->is_lettred,
@@ -173,9 +174,11 @@ class LocalSyncController extends Controller
                         'sage_guid' => $invoice->sage_guid,
                         'document_guid' => $invoice->document_guid,
                         'description' => $invoice->description,
+
+                        // DATES MÉTADONNÉES CONVERTIES EN STRING
                         'source_created_at' => $invoice->source_created_at ? date('Y-m-d H:i:s', strtotime($invoice->source_created_at)) : null,
                         'source_updated_at' => $invoice->source_updated_at ? date('Y-m-d H:i:s', strtotime($invoice->source_updated_at)) : null,
-                        'last_sage_sync' => $invoice->last_sage_sync ? date('Y-m-d H:i:s', strtotime($invoice->last_sage_sync)) : null,
+                        'last_sage_sync' => date('Y-m-d H:i:s', strtotime($invoice->last_sage_sync)),
 
                         // Synchronisation
                         'sync_status' => 'pending',
@@ -210,10 +213,16 @@ class LocalSyncController extends Controller
                         InvoiceSyncBuffer::create($data);
                         $addedCount++;
                     }
+
                 } catch (Exception $e) {
                     $errors[] = "Erreur facture {$invoice->invoice_number}: " . $e->getMessage();
                     Log::error("Erreur dump facture {$invoice->invoice_number}", [
                         'error' => $e->getMessage(),
+                        'invoice_data' => [
+                            'invoice_number' => $invoice->invoice_number ?? 'N/A',
+                            'client_code' => $invoice->client_code ?? 'N/A',
+                            'amount' => $invoice->amount ?? 'N/A'
+                        ],
                         'trace' => $e->getTraceAsString()
                     ]);
                 }
@@ -234,6 +243,7 @@ class LocalSyncController extends Controller
                 'force_refresh' => $forceRefresh,
                 'errors' => $errors
             ]);
+
         } catch (Exception $e) {
             Log::error('Erreur dump factures: ' . $e->getMessage(), [
                 'trace' => $e->getTraceAsString()
@@ -262,7 +272,9 @@ class LocalSyncController extends Controller
             $minAmount = $request->input('min_amount');
             $maxAmount = $request->input('max_amount');
 
-            $query = InvoiceSyncBuffer::where('sync_status', 'pending');
+            $query = InvoiceSyncBuffer::where('sync_status', 'pending')->where('invoice_number', '!=', '')
+                ->where('client_code', '!=', '')
+                ->where('balance_due', '>', 0);
 
             // Filtres avancés
             if ($priority) {
@@ -350,8 +362,6 @@ class LocalSyncController extends Controller
                     'description' => $invoice->description,
                     'sync_batch_id' => $invoice->sync_batch_id,
                     'last_sage_sync' => $invoice->last_sage_sync,
-                    'created_at' => $invoice->created_at,
-                    'updated_at' => $invoice->updated_at
                 ];
             });
 
@@ -384,68 +394,56 @@ class LocalSyncController extends Controller
         }
     }
 
-/**
-     * Marquer des factures comme synchronisées avec tracking amélioré (CORRIGÉ pour SQL Server)
-     */
     public function markAsSynced(Request $request)
-    {
-        try {
-            $invoiceIds = $request->input('invoice_ids', []);
-            $notes = $request->input('notes', 'Synchronisé automatiquement');
-            $syncBatchId = $request->input('sync_batch_id');
+{
+    try {
+        $invoiceIds = $request->input('invoice_ids', []);
+        $notes = $request->input('notes', 'Synchronisé automatiquement');
+        $syncBatchId = $request->input('sync_batch_id');
 
-            if (empty($invoiceIds)) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Aucune facture spécifiée'
-                ], 400);
-            }
-
-            // CORRECTION : Utiliser Carbon avec format explicite pour SQL Server
-            $now = Carbon::now();
-            $syncedAt = $now->format('Y-m-d H:i:s.v'); // Format avec millisecondes pour SQL Server
-            $lastSyncAttempt = $now->format('Y-m-d H:i:s.v');
-
-            $updateData = [
-                'sync_status' => 'synced',
-                'synced_at' => $syncedAt,
-                'sync_notes' => $notes,
-                'sync_attempts' => DB::raw('ISNULL(sync_attempts, 0) + 1'),
-                'last_sync_attempt' => $lastSyncAttempt,
-            ];
-
-            if ($syncBatchId) {
-                $updateData['sync_batch_id'] = $syncBatchId;
-            }
-
-            $updatedCount = InvoiceSyncBuffer::whereIn('id', $invoiceIds)
-                ->where('sync_status', 'pending')
-                ->update($updateData);
-
-            return response()->json([
-                'success' => true,
-                'message' => "{$updatedCount} facture(s) marquée(s) comme synchronisée(s)",
-                'updated_count' => $updatedCount,
-                'sync_batch_id' => $syncBatchId,
-                'synced_at' => $syncedAt
-            ]);
-
-        } catch (Exception $e) {
-            Log::error('Erreur marquage synchronisé: ' . $e->getMessage(), [
-                'invoice_ids' => $invoiceIds ?? [],
-                'trace' => $e->getTraceAsString()
-            ]);
-
+        if (empty($invoiceIds)) {
             return response()->json([
                 'success' => false,
-                'message' => 'Erreur lors du marquage des factures',
-                'error' => $e->getMessage()
-            ], 500);
+                'message' => 'Aucune facture spécifiée'
+            ], 400);
         }
-    }
 
+        $now = now()->format('Y-m-d H:i:s');
+
+        $updateData = [
+            'sync_status' => 'synced',
+            'synced_at' => $now,
+            'sync_notes' => $notes,
+            'sync_attempts' => DB::raw('ISNULL(sync_attempts, 0) + 1'),
+            'last_sync_attempt' => $now,
+        ];
+
+        if ($syncBatchId) {
+            $updateData['sync_batch_id'] = $syncBatchId;
+        }
+
+        $updatedCount = InvoiceSyncBuffer::whereIn('id', $invoiceIds)
+            ->where('sync_status', 'pending')
+            ->update($updateData);
+
+        return response()->json([
+            'success' => true,
+            'message' => "{$updatedCount} facture(s) marquée(s) comme synchronisée(s)",
+            'updated_count' => $updatedCount,
+            'sync_batch_id' => $syncBatchId
+        ]);
+
+    } catch (Exception $e) {
+        Log::error('Erreur marquage synchronisé: ' . $e->getMessage());
+        return response()->json([
+            'success' => false,
+            'message' => 'Erreur lors du marquage des factures',
+            'error' => $e->getMessage()
+        ], 500);
+    }
+}
     /**
-     * Marquer des tentatives de synchronisation échouées (CORRIGÉ pour SQL Server)
+     * Marquer des tentatives de synchronisation échouées - VERSION ULTRA SIMPLE
      */
     public function markAsFailed(Request $request)
     {
@@ -460,15 +458,14 @@ class LocalSyncController extends Controller
                 ], 400);
             }
 
-            // CORRECTION : Format datetime explicite pour SQL Server
-            $now = Carbon::now();
-            $lastSyncAttempt = $now->format('Y-m-d H:i:s.v');
+            // SUPER SIMPLE : String direct !
+            $now = now()->format('Y-m-d H:i:s');
 
             $updatedCount = InvoiceSyncBuffer::whereIn('id', $invoiceIds)
                 ->update([
                     'sync_status' => 'failed',
                     'sync_attempts' => DB::raw('ISNULL(sync_attempts, 0) + 1'),
-                    'last_sync_attempt' => $lastSyncAttempt,
+                    'last_sync_attempt' => $now,
                     'last_error_message' => $errorMessage,
                 ]);
 
@@ -479,10 +476,7 @@ class LocalSyncController extends Controller
             ]);
 
         } catch (Exception $e) {
-            Log::error('Erreur marquage échec: ' . $e->getMessage(), [
-                'invoice_ids' => $invoiceIds ?? [],
-                'trace' => $e->getTraceAsString()
-            ]);
+            Log::error('Erreur marquage échec: ' . $e->getMessage());
 
             return response()->json([
                 'success' => false,
@@ -546,8 +540,6 @@ class LocalSyncController extends Controller
                     'recovery_breakdown' => $recoveryStats,
                     'client_stats' => $clientStats,
                     'last_sync' => InvoiceSyncBuffer::where('sync_status', 'synced')->max('synced_at'),
-                    'last_dump' => InvoiceSyncBuffer::max('created_at'),
-                    'last_sage_sync' => InvoiceSyncBuffer::max('last_sage_sync'),
                 ],
                 'currency' => 'XOF',
                 'generated_at' => now()->toIso8601String()
