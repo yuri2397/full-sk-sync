@@ -23,7 +23,7 @@ class LocalSyncController extends Controller
             $forceRefresh = $request->boolean('force_refresh', false);
             $batchId = 'batch_' . now()->format('Y_m_d_H_i_s') . '_' . Str::random(8);
 
-            // REQUÊTE AMÉLIORÉE avec tous les nouveaux champs
+            // REQUÊTE CORRIGÉE avec tous les nouveaux champs
             $sql = "
                 SELECT 
                     -- === INFORMATIONS CLIENT ===
@@ -35,7 +35,7 @@ class LocalSyncController extends Controller
                     ISNULL(c.CT_Ville, '') as client_city,
                     ISNULL(c.CT_Contact, '') as commercial_contact,
                     ISNULL(c.CT_Encours, 0) as client_credit_limit,
-                    CAST(ISNULL(c.N_Condition, '') as VARCHAR) as client_payment_terms,
+                    CAST(ISNULL(c.N_Condition, 0) as VARCHAR) as client_payment_terms,
                     
                     -- === INFORMATIONS FACTURE ===
                     e.EC_RefPiece as invoice_number,
@@ -79,8 +79,8 @@ class LocalSyncController extends Controller
                     -- === MÉTADONNÉES ENRICHIES ===
                     e.EC_Intitule as description,
                     CAST(e.cbMarq as VARCHAR) as source_entry_id,
-                    e.EC_FactureGUID as sage_guid,
-                    ISNULL(f.DO_GUID, '') as document_guid,
+                    CAST(e.EC_FactureGUID as VARCHAR) as sage_guid,
+                    ISNULL(CAST(f.DO_GUID as VARCHAR), '') as document_guid,
                     e.cbCreation as source_created_at,
                     e.cbModification as source_updated_at,
                     GETDATE() as last_sage_sync
@@ -91,7 +91,7 @@ class LocalSyncController extends Controller
 
                 WHERE 
                     e.CT_Num LIKE '411%'
-                    AND e.JO_Num IN ('VTEM')
+                    AND e.JO_Num IN ('VTEM', 'RANO')
                     AND e.EC_Sens = 0
                     AND (e.EC_Lettrage = '' OR e.EC_Lettrage IS NULL)
                     AND e.EC_RefPiece IS NOT NULL
@@ -203,7 +203,6 @@ class LocalSyncController extends Controller
                         InvoiceSyncBuffer::create($data);
                         $addedCount++;
                     }
-
                 } catch (Exception $e) {
                     $errors[] = "Erreur facture {$invoice->invoice_number}: " . $e->getMessage();
                     Log::error("Erreur dump facture {$invoice->invoice_number}", [
@@ -228,7 +227,6 @@ class LocalSyncController extends Controller
                 'force_refresh' => $forceRefresh,
                 'errors' => $errors
             ]);
-
         } catch (Exception $e) {
             Log::error('Erreur dump factures: ' . $e->getMessage(), [
                 'trace' => $e->getTraceAsString()
@@ -368,7 +366,6 @@ class LocalSyncController extends Controller
                     'max_amount' => $maxAmount,
                 ])
             ]);
-
         } catch (Exception $e) {
             Log::error('Erreur récupération factures non sync: ' . $e->getMessage());
 
@@ -419,7 +416,6 @@ class LocalSyncController extends Controller
                 'updated_count' => $updatedCount,
                 'sync_batch_id' => $syncBatchId
             ]);
-
         } catch (Exception $e) {
             Log::error('Erreur marquage synchronisé: ' . $e->getMessage());
 
@@ -453,7 +449,6 @@ class LocalSyncController extends Controller
                 'message' => "{$updatedCount} facture(s) marquée(s) comme échouée(s)",
                 'updated_count' => $updatedCount
             ]);
-
         } catch (Exception $e) {
             Log::error('Erreur marquage échec: ' . $e->getMessage());
 
@@ -525,7 +520,6 @@ class LocalSyncController extends Controller
                 'currency' => 'XOF',
                 'generated_at' => now()->toIso8601String()
             ]);
-
         } catch (Exception $e) {
             Log::error('Erreur récupération stats: ' . $e->getMessage());
 
@@ -564,7 +558,6 @@ class LocalSyncController extends Controller
                     'buffer_pending' => $pendingCount,
                 ]
             ]);
-
         } catch (Exception $e) {
             return response()->json([
                 'success' => false,
@@ -596,7 +589,6 @@ class LocalSyncController extends Controller
                     'older_than_days' => $daysOld
                 ]
             ]);
-
         } catch (Exception $e) {
             Log::error('Erreur nettoyage: ' . $e->getMessage());
 
