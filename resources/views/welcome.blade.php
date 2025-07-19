@@ -816,7 +816,7 @@
             addLogEntry('🚀 Interface de synchronisation initialisée');
 
             // Actualisation automatique toutes les 30 secondes
-            setInterval(refreshStats, 30000);
+            // setInterval(refreshStats, 30000);
         });
     </script>
 </body>
