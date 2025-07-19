@@ -400,7 +400,7 @@ class LocalSyncController extends Controller
                 ], 400);
             }
 
-            // CORRECTION : Utiliser Carbon/now() pour les dates
+            // CORRECTION : Utiliser Carbon/now() pour les dates y-d-m
             $now = now();
 
             $updateData = [
